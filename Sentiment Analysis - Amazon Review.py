@@ -1,0 +1,437 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Oct 10 15:55:06 2020
+
+@author: jake chen
+"""
+
+import sys 
+print(sys.version)
+#Python 3.7.6
+
+
+#-----------------------------------------------
+#Import data
+#-----------------------------------------------
+
+in_dir = "C:\\Users\\dimen\\Documents\\MMA\\MMA 865 Big Data Analytics\\Individual Assignment"
+out_dir = in_dir
+
+import pandas as pd
+import os
+
+df1=pd.read_csv(os.path.join(in_dir, "sentiment_train.csv"))
+df2=pd.read_csv(os.path.join(in_dir, "sentiment_test.csv"))
+
+#Add index column for train/test label
+train_label = 'train'
+test_label = 'test'
+
+df1["Dataset"]= train_label
+df2["Dataset"]= test_label
+
+
+#-----------------------------------------------
+#Check missing data
+#-----------------------------------------------
+
+df1.isnull().any(axis = 1).sum()
+df2.isnull().any(axis = 1).sum()
+df1.dropna(inplace=True)
+df2.dropna(inplace=True)
+
+#-----------------------------------------------
+#Check class imbalance
+#-----------------------------------------------
+
+df1['Polarity'].value_counts()
+df2['Polarity'].value_counts()
+	
+import seaborn as sns
+sns.countplot(x='Polarity', data=df1,palette="Set1").set_title('Training set class count')
+sns.countplot(x='Polarity', data=df2,palette="Set1").set_title('Testing set class count')
+
+#-----------------------------------------------
+#Concatenate train and test for pre-processing
+#-----------------------------------------------
+
+raw_df = pd.concat([df1, df2],sort=False)
+
+list(raw_df)
+raw_df.info()
+raw_df.shape
+raw_df.head()
+raw_df.dtypes
+
+
+#-----------------------------------------------
+#Pre-processing
+#-----------------------------------------------
+
+import nltk
+#nltk.download()
+
+
+#Case Normalization
+raw_df['lower_case'] = raw_df['Sentence'].str.lower()
+
+
+#Negation handling
+raw_df['negation_handling1'] = raw_df['lower_case'].str.replace('not ','not')
+
+#Punctuations removal
+
+import string
+table = str.maketrans('', '', string.punctuation)
+raw_df['punctuation_removed']  = [w.translate(table) for w in raw_df['negation_handling1']]
+
+
+#Tokenization
+from nltk.tokenize import word_tokenize
+raw_df['tokenized_text'] = raw_df['punctuation_removed'].apply(word_tokenize) 
+
+
+#lemmatization  
+from nltk.tag import pos_tag
+from nltk.stem.wordnet import WordNetLemmatizer
+from nltk.corpus import wordnet
+
+wnl = WordNetLemmatizer()
+def lemmatize(s):
+     s = [wnl.lemmatize(word,'v') for word in s]
+     return s
+lemmatize("Sentences,kid")
+raw_df['lemmizatized'] = raw_df['tokenized_text'].apply(lambda x: lemmatize(x))
+
+
+#Punctuations removal
+#raw_df['punctuation_removed'] = raw_df['lemmizatized'].apply(lambda x: [item for item in x if item.isalpha()])
+
+#Stop words removal
+from nltk.corpus import stopwords
+
+stop_words = stopwords.words('english')
+raw_df['stop_word_removed'] = raw_df['lemmizatized'].apply(lambda x: [item for item in x if item not in stop_words])
+
+
+#Get final cleaned column (in array format)
+raw_df['cleaned_text']=raw_df['stop_word_removed'] 
+
+
+#-----------------------------------------------
+#Split to train/test
+#-----------------------------------------------
+
+#Converted the array of cleaned_text to singular string
+raw_df['cleaned_text']=[" ".join(review) for review in raw_df['cleaned_text'].values]
+
+train_df = raw_df[raw_df['Dataset']== train_label]
+test_df = raw_df[raw_df['Dataset']== test_label]
+
+#X_train = train_df['cleaned_text']
+#y_train = train_df['Polarity']
+#X_test = test_df['cleaned_text']
+#y_test = test_df['Polarity']
+
+
+#-----------------------------------------------
+#TF-IDF
+#-----------------------------------------------
+
+#We will fit the vectorizer on the complete dataset. That is on all the reviews(train and test). We can fit the vectorizer on just Training dataset but that can have negative implications. As some words which were not present in Training can be there in Test Dataset.
+#Source: https://medium.com/dataseries/sentiment-classifier-using-tfidf-3ffce3f1cbd5
+
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.corpus import words
+
+tv = TfidfVectorizer(ngram_range=(1,2), sublinear_tf = True, max_features=2000, min_df=5, max_df=0.7)
+# ngram_range of (1, 2) means unigrams and bigrams
+# max_features  specifies the number of most occurring words for which you want to create feature vectors. Less frequently occurring words do not play a major role in classification
+# min_df  value of X specifies that the word must occur in at least X documents.
+# max_df  value of 0.X percent specifies that the word must not occur in more than X0 percent of the documents.
+
+X = tv.fit_transform(train_df['cleaned_text']).toarray()
+
+
+def fit_corpus(train_data, test_data):
+    corpus = pd.DataFrame({"cleaned_text": train_data["cleaned_text"]})
+    corpus.cleaned_text.append(test_data["cleaned_text"], ignore_index=True)
+    tfidf = TfidfVectorizer(min_df=2, max_df=0.5, ngram_range=(1,2))
+    tfidf.fit(corpus["cleaned_text"])
+    return tfidf
+
+def transform_data(tfidf, dataset):
+    features = tfidf.transform(dataset["cleaned_text"])
+    return pd.DataFrame(features.todense(), columns = tfidf.get_feature_names())
+
+tfidf = fit_corpus(train_df, test_df)  #Fitting the vecorizer
+X_train = transform_data(tfidf, train_df)  #transforming 
+X_test = transform_data(tfidf, test_df)    #Train and Test
+y_train = train_df["Polarity"]  #Taking lables in separate
+y_test = test_df["Polarity"]    #variables
+
+
+#-----------------------------------------------
+# Modelling: Logistic Regression
+#-----------------------------------------------
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, learning_curve
+from sklearn.metrics import accuracy_score, cohen_kappa_score, f1_score, log_loss
+
+model_lr = LogisticRegression(random_state=123, solver='lbfgs')
+model_lr.fit(X_train, y_train)
+
+y_pred_lr = model_lr.predict(X_test)
+
+#Confusion matrix
+import seaborn as sn
+import matplotlib.pyplot as plt
+
+confusion_data_lr = {'y_Actual': y_test,
+        'y_Predicted': y_pred_lr
+        }
+
+df_lr = pd.DataFrame(confusion_data_lr, columns=['y_Actual','y_Predicted'])
+confusion_matrix_lr = pd.crosstab(df_lr['y_Actual'], df_lr['y_Predicted'], rownames=['Actual'], colnames=['Predicted'])
+
+sn.heatmap(confusion_matrix_lr, annot=True)
+plt.show()
+
+#Classification report
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+
+print(confusion_matrix(y_test,y_pred_lr))  
+print(classification_report(y_test,y_pred_lr))
+
+print("Accuracy = {:.2f}".format(accuracy_score(y_test, y_pred_lr)))
+print("Kappa = {:.2f}".format(cohen_kappa_score(y_test, y_pred_lr)))
+print("F1 Score = {:.2f}".format(f1_score(y_test, y_pred_lr)))
+print("Log Loss = {:.2f}".format(log_loss(y_test, y_pred_lr)))
+
+#ROC AUC
+from yellowbrick.classifier import ROCAUC
+
+visualizer = ROCAUC(model_lr, classes=[0,1])
+
+visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
+visualizer.score(X_test, y_test)  # Evaluate the model on the test data
+g = visualizer.poof()             # Draw/show/poof the data
+
+
+#-----------------------------------------------
+# Modelling: Random Forest
+#-----------------------------------------------
+
+from sklearn.ensemble import RandomForestClassifier
+model_rf = RandomForestClassifier(n_estimators=100, random_state=123)  
+model_rf.fit(X_train, y_train)
+
+y_pred_rf = model_rf.predict(X_test)
+
+
+#Classification report
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+from sklearn.metrics import accuracy_score, cohen_kappa_score, f1_score, log_loss
+
+print(confusion_matrix(y_test,y_pred_rf))  
+print(classification_report(y_test,y_pred_rf))  
+
+print("Accuracy = {:.2f}".format(accuracy_score(y_test, y_pred_rf)))
+print("Kappa = {:.2f}".format(cohen_kappa_score(y_test, y_pred_rf)))
+print("F1 Score = {:.2f}".format(f1_score(y_test, y_pred_rf)))
+print("Log Loss = {:.2f}".format(log_loss(y_test, y_pred_rf)))
+
+#Confusion matrix
+import seaborn as sn
+import matplotlib.pyplot as plt
+
+confusion_data_rf = {'y_Actual': y_test,
+        'y_Predicted': y_pred_rf
+        }
+
+df_rf = pd.DataFrame(confusion_data_rf, columns=['y_Actual','y_Predicted'])
+confusion_matrix_rf = pd.crosstab(df_rf['y_Actual'], df_rf['y_Predicted'], rownames=['Actual'], colnames=['Predicted'])
+
+sn.heatmap(confusion_matrix_rf, annot=True)
+plt.show()
+
+
+#ROC AUC
+from yellowbrick.classifier import ROCAUC
+from sklearn.metrics import roc_curve, roc_auc_score
+
+visualizer = ROCAUC(model_rf, classes=[0,1])
+
+visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
+visualizer.score(X_test, y_test)  # Evaluate the model on the test data
+g = visualizer.poof()             # Draw/show/poof the data
+
+
+
+#-----------------------------------------------
+# Modelling: Decision Tree
+#-----------------------------------------------
+
+
+from sklearn.tree import DecisionTreeClassifier
+
+model_dt = DecisionTreeClassifier(random_state=42, criterion="entropy",
+                             min_samples_split=10, min_samples_leaf=10, max_depth=3, max_leaf_nodes=5)
+model_dt.fit(X_train, y_train)
+
+y_pred_dt = model_dt.predict(X_test)
+
+class_names = [str(x) for x in model_dt.classes_]
+
+#Model parameters
+print(model_dt.tree_.node_count)
+print(model_dt.tree_.impurity)
+print(model_dt.tree_.children_left)
+print(model_dt.tree_.threshold)
+
+#Confusion matrix
+import seaborn as sn
+import matplotlib.pyplot as plt
+
+confusion_data_dt = {'y_Actual': y_test,
+        'y_Predicted': y_pred_dt
+        }
+
+df_dt = pd.DataFrame(confusion_data_dt, columns=['y_Actual','y_Predicted'])
+confusion_matrix_dt = pd.crosstab(df_dt['y_Actual'], df_dt['y_Predicted'], rownames=['Actual'], colnames=['Predicted'])
+
+sn.heatmap(confusion_matrix_dt, annot=True)
+plt.show()
+
+#Classification report
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+
+print(confusion_matrix(y_test,y_pred_dt))  
+print(classification_report(y_test,y_pred_dt))
+
+print("Accuracy = {:.2f}".format(accuracy_score(y_test, y_pred_dt)))
+print("Kappa = {:.2f}".format(cohen_kappa_score(y_test, y_pred_dt)))
+print("F1 Score = {:.2f}".format(f1_score(y_test, y_pred_dt)))
+print("Log Loss = {:.2f}".format(log_loss(y_test, y_pred_dt)))
+
+#ROC AUC
+from yellowbrick.classifier import ROCAUC
+
+visualizer = ROCAUC(model_dt, classes=[0,1])
+
+visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
+visualizer.score(X_test, y_test)  # Evaluate the model on the test data
+g = visualizer.poof()             # Draw/show/poof the data
+
+
+
+#-----------------------------------------------
+# Modelling: Naive Bayes
+#-----------------------------------------------
+
+
+from sklearn.naive_bayes import GaussianNB
+gnb = GaussianNB()
+gnb = gnb.fit(X_train, y_train)
+gnb
+
+y_pred_gnb = gnb.predict(X_test)
+
+#Confusion matrix
+confusion_data_gnb = {'y_Actual': y_test,
+        'y_Predicted': y_pred_gnb
+        }
+
+df_gnb = pd.DataFrame(confusion_data_gnb, columns=['y_Actual','y_Predicted'])
+confusion_matrix_gnb = pd.crosstab(df_gnb['y_Actual'], df_gnb['y_Predicted'], rownames=['Actual'], colnames=['Predicted'])
+
+sn.heatmap(confusion_matrix_gnb, annot=True)
+plt.show()
+
+#Model parameter
+gnb.theta_ # Mean of each feature per class
+gnb.sigma_ # Variance of each feature per class
+
+
+#Classification report
+from sklearn.metrics import accuracy_score, cohen_kappa_score, f1_score, log_loss
+
+print(confusion_matrix(y_test,y_pred_gnb))  
+print(classification_report(y_test, y_pred_gnb, target_names=class_names))
+
+print("Accuracy = {:.2f}".format(accuracy_score(y_test, y_pred_gnb)))
+print("Kappa = {:.2f}".format(cohen_kappa_score(y_test, y_pred_gnb)))
+print("F1 Score = {:.2f}".format(f1_score(y_test, y_pred_gnb)))
+print("Log Loss = {:.2f}".format(log_loss(y_test, y_pred_gnb)))
+
+
+#ROC AUC
+from yellowbrick.classifier import ROCAUC
+
+visualizer = ROCAUC(gnb, classes=class_names)
+
+visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
+visualizer.score(X_test, y_test)  # Evaluate the model on the test data
+g = visualizer.poof()             # Draw/show/poof the data
+
+
+
+#-----------------------------------------------
+# Modelling: KNN
+#-----------------------------------------------
+
+from sklearn.neighbors import KNeighborsClassifier
+
+knn_clf = KNeighborsClassifier(n_neighbors=5)
+knn_clf.fit(X_train, y_train)
+
+y_pred_knn = knn_clf.predict(X_test)
+
+
+#Model parameters
+knn_clf.effective_metric_
+knn_clf.effective_metric_params_
+
+#Confusion matrix
+confusion_data_knn = {'y_Actual': y_test,
+        'y_Predicted': y_pred_knn
+        }
+
+df_knn = pd.DataFrame(confusion_data_knn, columns=['y_Actual','y_Predicted'])
+confusion_matrix_knn = pd.crosstab(df_knn['y_Actual'], df_knn['y_Predicted'], rownames=['Actual'], colnames=['Predicted'])
+
+sn.heatmap(confusion_matrix_knn, annot=True)
+plt.show()
+
+#Classification report
+print(classification_report(y_test, y_pred_knn, target_names=class_names))
+
+print("Accuracy = {:.2f}".format(accuracy_score(y_test, y_pred_knn)))
+print("Kappa = {:.2f}".format(cohen_kappa_score(y_test, y_pred_knn)))
+print("F1 Score = {:.2f}".format(f1_score(y_test, y_pred_knn)))
+print("Log Loss = {:.2f}".format(log_loss(y_test, y_pred_knn)))
+
+#ROC AUC
+visualizer = ROCAUC(knn_clf, classes=class_names)
+
+visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
+visualizer.score(X_test, y_test)  # Evaluate the model on the test data
+g = visualizer.poof()             # Draw/show/poof the data
+
+
+
+#-----------------------------------------------
+# Prediction from final model
+#-----------------------------------------------
+
+import numpy as np
+import pandas as pd
+import scipy.sparse as sparse
+
+
+#test_df['y_pred'] = y_pred_rf
+#print(test_df)
+
+#test_df.to_csv("Predicted Values.csv", index=False)
+
