@@ -374,3 +374,4 @@ visualizer = ROCAUC(knn_clf, classes=class_names)
 visualizer.fit(X_train, y_train)  # Fit the training data to the visualizer
 visualizer.score(X_test, y_test)  # Evaluate the model on the test data
 g = visualizer.poof()             # Draw/show/poof the data
+
