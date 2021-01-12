@@ -10,7 +10,7 @@ today = date.today()
 print("As of:", today)
 print("Author: ", "Jake Chen")
 print("Python version:", sys.version)
-
+print("Competition link: https://www.kaggle.com/c/titanic")
 #%%         Import libraries
 #---------------------------------------------------------------
 
